@@ -6,6 +6,12 @@
     "pi-package"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dev-resolute/pi-flow.git"
+  },
+  "homepage": "https://github.com/dev-resolute/pi-flow#readme",
+  "bugs": "https://github.com/dev-resolute/pi-flow/issues",
   "type": "module",
   "files": [
     "extensions",
