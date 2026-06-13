@@ -4,13 +4,13 @@
 
 | Term | Definition |
 |------|-----------|
-| **Pipeline** | A multi-stage development workflow (e.g., new-feature, debug, improve-arch) that orchestrates skill execution in sequence. |
-| **Stage** | A single step within a pipeline, mapping to a pi skill (grill, prd, issues, tdd). Each stage has a model type (design or code) and a gate. |
-| **Gate** | A checkpoint at the end of a stage. `pause` gates require manual `/pi-flow:next` to advance. `auto` gates advance automatically when a completion signal is detected. |
-| **Model type** | Classification of a stage as `design` (planning skills) or `code` (implementation skills), determining which LLM model the pipeline switches to. |
+| **Flow** | An ordered sequence of skills run as one workflow, triggered by name. Three flows (`new-feature`, `improve-arch`, `debug`) ship built-in; users define more in `settings.json`, and a user-defined flow overrides a built-in of the same name. Replaces the earlier term *Pipeline*. |
+| **Stage** | A single skill within a flow, configured with its own model and a mode. "Which stage am I in" = which skill is currently running. |
+| **Mode** | A per-stage setting: `HITL` (the flow halts after the skill and waits for a human command before advancing) or `AFK` (the flow auto-advances when the skill's turn ends). A flow whose stages are all `AFK` runs unattended end to end. Replaces the earlier `Gate` (`auto`/`pause`) concept. |
+| **Model** | The LLM a given stage runs on. Each stage names its own model, replacing the earlier `design`/`code` binary classification. |
 | **Release** | A published version of `@resolutedev/pi-flow` on the npm registry, triggered by a git tag push. |
 | **Version tag** | A git tag in the format `v{major}.{minor}.{patch}` (e.g., `v1.2.0`) that serves as the source of truth for the published npm version. |
 
 ## Bounded Context
 
-pi-flow is a single bounded context: a workflow orchestration extension for the pi coding agent. It manages pipeline state, model switching, and skill invocation sequencing.
+pi-flow is a single bounded context: a workflow orchestration extension for the pi coding agent. It manages flow definitions (user-authored), stage sequencing, per-stage model switching, and mode-driven advancement (HITL pauses vs AFK auto-traversal).
