@@ -1,22 +1,82 @@
 # pi-flow
 
-Multi-stage development workflow orchestrator for [pi](https://pi.dev).
+Run your own multi-stage skill workflows in [pi](https://pi.dev) — pick the model for each skill, and mark which skills need you and which run unattended.
 
-## Workflows
+## Concepts
 
-| Command | Stages |
-|---------|--------|
-| `/pi-flow:new-feature <topic>` | grill-with-docs → to-prd → to-issues → tdd |
-| `/pi-flow:improve-arch <repo>` | improve-codebase-architecture → choose → to-prd → to-issues → tdd |
-| `/pi-flow:debug <issue>` | diagnose → to-prd → to-issues → tdd |
+- **Flow** — an ordered list of skills you trigger by name.
+- **Stage** — one skill in a flow, with its own optional model and a mode.
+- **Mode** — `HITL` (the flow pauses after the skill and waits for `/pi-flow:next`) or `AFK` (the flow auto-advances when the skill's agent run ends). A flow whose stages are all `AFK` runs start to finish unattended.
 
-## Features
+## Built-in flows
 
-- **Automatic model switching**: design model (qwen3.7-max) for planning stages, code model (kimi2.6) for implementation
-- **Stage completion detection**: dual-signal strategy with anti-signal override
-- **Gate behavior**: pause after grill and issues for review, auto-advance through prd and tdd
-- **State persistence**: survives `/new` and session restarts
-- **Session recovery**: restores pipeline state on startup, re-notifies if paused at gate
+Three flows ship ready to use — no setup required:
+
+| Flow | Stages |
+|------|--------|
+| `new-feature` | grill-with-docs → to-prd → to-issues → tdd |
+| `improve-arch` | improve-codebase-architecture → to-prd → to-issues → tdd |
+| `debug` | diagnose → to-prd → to-issues → tdd |
+
+Run one:
+
+```
+/pi-flow:run new-feature add dark mode
+```
+
+Start typing `/pi-flow:run ` and pi autocompletes your flow names with their descriptions.
+
+## Defining your own flows
+
+Add a top-level `pi-flow` key to your pi `settings.json`. A flow you define with the same name as a built-in overrides it; new names are added alongside the built-ins.
+
+```json
+{
+  "pi-flow": {
+    "flows": {
+      "ship-it": {
+        "description": "Plan, build, and review",
+        "stages": [
+          { "skill": "grill-with-docs", "model": "opencode-go/qwen3.7-max", "mode": "HITL" },
+          { "skill": "to-prd",          "model": "opencode-go/qwen3.7-max", "mode": "AFK"  },
+          { "skill": "tdd",             "model": "opencode-go/kimi-k2.6",   "mode": "AFK"  }
+        ]
+      }
+    }
+  }
+}
+```
+
+Each stage:
+
+- **`skill`** (required) — the pi skill to run.
+- **`model`** (optional) — `"provider/id"`. Omit it to keep whatever model is currently active. All models are validated when you start a flow, so a typo fails before the first stage runs.
+- **`mode`** (optional) — `HITL` or `AFK`. Defaults to `HITL`, so a stage never runs unattended unless you opt in.
+
+To customise a built-in, print its definition with `/pi-flow:show <name>` and paste it under your `pi-flow.flows`.
+
+## How a flow runs
+
+- On each stage, pi-flow switches to the stage's model (if set) and hands the skill a kickoff message. The first stage receives your `run` input; later stages continue from what the session has produced so far.
+- When the agent finishes a stage:
+  - **AFK** → advance to the next stage automatically, unless the agent reports it is stuck or has a question (then the flow pauses).
+  - **HITL** → pause and wait for `/pi-flow:next`.
+- If a stage can't start (unknown or unavailable model), the flow pauses instead of cascading through later stages.
+- When the last stage finishes, the flow completes.
+
+Want a checkpoint in an otherwise-unattended flow? Mark that stage `HITL` — that's what it's for.
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `/pi-flow:run <name> [input]` | Start a flow (autocompletes flow names) |
+| `/pi-flow:next` | Advance past a HITL pause |
+| `/pi-flow:skip` | Abandon the current stage and move to the next |
+| `/pi-flow:retry` | Re-run the current stage |
+| `/pi-flow:cancel` | Stop the active flow (produced work stays in the session) |
+| `/pi-flow:status` | Show your flows and the active stage |
+| `/pi-flow:show <name>` | Print a flow's definition as JSON |
 
 ## Setup
 
@@ -24,24 +84,7 @@ Multi-stage development workflow orchestrator for [pi](https://pi.dev).
 pi install npm:@resolutedev/pi-flow
 ```
 
-Configure models:
-```
-/pi-flow:setup
-```
-
-Or edit `settings.json`:
-```json
-{
-  "extensions": {
-    "pi-flow": {
-      "models": {
-        "design": "opencode-go/qwen3.7-max",
-        "code": "opencode-go/kimi2.6"
-      }
-    }
-  }
-}
-```
+The built-in flows work immediately. Define your own in `settings.json` as shown above. Flow progress is persisted, so a flow survives `/new` and session restarts; if you delete a flow that was mid-run, its leftover state is cleared on the next start.
 
 ### For Maintainers: Publishing Releases
 
@@ -71,17 +114,3 @@ The workflow will:
 - Patch `package.json` with the version
 - Publish to npm with `--access public`
 - Create a GitHub Release with auto-generated notes
-
-## Commands
-
-| Command | Description |
-|---------|-------------|
-| `/pi-flow:new-feature <topic>` | Start new feature workflow |
-| `/pi-flow:improve-arch <repo>` | Start architecture improvement |
-| `/pi-flow:debug <issue>` | Start debug workflow |
-| `/pi-flow:next` | Advance past a gate |
-| `/pi-flow:skip` | Force-advance current stage |
-| `/pi-flow:retry` | Re-send current stage prompt |
-| `/pi-flow:cancel` | Cancel active pipeline |
-| `/pi-flow:status` | Show pipeline status |
-| `/pi-flow:setup` | Configure model mappings |

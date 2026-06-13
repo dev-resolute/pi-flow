@@ -1,116 +1,122 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { PipelineDefinition, PipelineStage } from "./pipelines.js";
-import { findPipeline } from "./pipelines.js";
-import type { PipelineState } from "./state.js";
-import { getState, setState } from "./state.js";
-import { getConfig, resolveModel } from "./config.js";
+import type { FlowDefinition, FlowStage } from "./flows.js";
+import type { FlowState } from "./state.js";
+import { setState } from "./state.js";
+import { resolveModel } from "./config.js";
 import { renderWidget, clearWidget } from "./widget.js";
-import { detectCompletion } from "./detector.js";
+import { hasAntiSignal } from "./detector.js";
+
+export const STATE_ENTRY = "pi-flow-state";
 
 export function transitionToStage(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
-  pipeline: PipelineDefinition,
-  state: PipelineState,
+  flow: FlowDefinition,
+  state: FlowState,
 ): void {
-  const stage = pipeline.stages[state.stageIndex];
+  const stage = flow.stages[state.stageIndex];
+  if (!applyModel(pi, ctx, stage, state)) return;
+  pi.sendUserMessage(buildKickoff(stage, state));
+  renderWidget(ctx, flow, state);
+}
 
-  // Switch model
-  const config = getConfig(pi);
-  const modelRef = resolveModel(config, stage.modelType);
-  const model = ctx.modelRegistry?.find(modelRef.provider, modelRef.id);
-  if (model) {
-    pi.setModel(model).then((success) => {
-      if (!success) {
-        ctx.ui.notify(
-          `Failed to switch to ${modelRef.provider}/${modelRef.id}: no API key available`,
-          "warning"
-        );
-      }
-    });
-  } else {
-    ctx.ui.notify(
-      `Model ${modelRef.provider}/${modelRef.id} not found in registry. Run /pi-flow:setup to configure.`,
-      "warning"
-    );
+export function validateModels(ctx: ExtensionContext, flow: FlowDefinition): string[] {
+  const errors: string[] = [];
+  for (const stage of flow.stages) {
+    if (stage.model === undefined) continue;
+    const { provider, id } = resolveModel(stage.model);
+    if (!ctx.modelRegistry?.find(provider, id)) {
+      errors.push(`stage "${stage.skill}": model "${stage.model}" is not available`);
+    }
   }
-
-  // Send transition prompt
-  const prompt = buildTransitionPrompt(stage, state);
-  pi.sendUserMessage(prompt);
-
-  // Update widget
-  renderWidget(ctx, pipeline, state);
+  return errors;
 }
 
 export function advanceStage(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
-  pipeline: PipelineDefinition,
-  currentState: PipelineState,
+  flow: FlowDefinition,
+  state: FlowState,
 ): void {
-  const nextStageIndex = currentState.stageIndex + 1;
+  const nextIndex = state.stageIndex + 1;
 
-  if (nextStageIndex >= pipeline.stages.length) {
-    // Pipeline complete
-    const completedState: PipelineState = {
-      ...currentState,
-      phase: "complete",
-    };
-    setState(completedState);
-    pi.appendEntry("pi-flow-state", completedState);
+  if (nextIndex >= flow.stages.length) {
+    persist(pi, { ...state, phase: "complete" });
     clearWidget(ctx);
-    ctx.ui.notify("Pipeline complete!", "info");
+    ctx.ui.notify(`Flow "${state.flowId}" complete.`, "info");
     return;
   }
 
-  const nextState: PipelineState = {
-    ...currentState,
-    stageIndex: nextStageIndex,
-  };
-
-  setState(nextState);
-  pi.appendEntry("pi-flow-state", nextState);
-  transitionToStage(pi, ctx, pipeline, nextState);
+  const next = persist(pi, { ...state, stageIndex: nextIndex, phase: "running" });
+  transitionToStage(pi, ctx, flow, next);
 }
 
-export function handleStageCompletion(
+export function handleAgentEnd(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
-  pipeline: PipelineDefinition,
-  state: PipelineState,
-  agentMessage: string,
+  flow: FlowDefinition,
+  state: FlowState,
+  finalMessage: string,
 ): void {
-  const stage = pipeline.stages[state.stageIndex];
-  const result = detectCompletion(agentMessage, stage.id, state.pipelineId);
+  if (state.phase !== "running") return;
 
-  if (!result.complete) return;
+  const stage = flow.stages[state.stageIndex];
+  if (stage.mode !== "AFK") return;
 
-  if (stage.gate === "auto") {
-    advanceStage(pi, ctx, pipeline, state);
-  } else {
-    // Pause at gate
-    const gatedState: PipelineState = {
-      ...state,
-      phase: "gated",
-    };
-    setState(gatedState);
-    pi.appendEntry("pi-flow-state", gatedState);
-    const nextStage = pipeline.stages[state.stageIndex + 1];
+  if (hasAntiSignal(finalMessage)) {
+    persist(pi, { ...state, phase: "gated" });
     ctx.ui.notify(
-      `Stage "${stage.id}" complete. Run /pi-flow:next to continue to ${nextStage?.id ?? "completion"}.`,
-      "info"
+      `Stage "${stage.skill}" paused — it reported it is not done. Run /pi-flow:next to continue or /pi-flow:skip to move on.`,
+      "info",
     );
+    return;
   }
+
+  advanceStage(pi, ctx, flow, state);
 }
 
-function buildTransitionPrompt(stage: PipelineStage, state: PipelineState): string {
-  const prompts: Record<string, string> = {
-    grill: `Start grilling the design for: ${state.topic}. Use grill-with-docs to interview about the feature, explore edge cases, and establish shared understanding.`,
-    prd: `Convert the design decisions into a PRD. Reference any context established during the grilling session.`,
-    issues: `Break the PRD into independently-grabbable implementation issues using vertical slices (tracer bullets).`,
-    tdd: `Begin TDD implementation. Start with the first issue — write a failing test, then the minimal code to pass.`,
-  };
+function persist(pi: ExtensionAPI, state: FlowState): FlowState {
+  setState(state);
+  pi.appendEntry(STATE_ENTRY, state);
+  return state;
+}
 
-  return prompts[stage.id] ?? `Executing stage: ${stage.id}`;
+function applyModel(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  stage: FlowStage,
+  state: FlowState,
+): boolean {
+  if (stage.model === undefined) return true;
+
+  const { provider, id } = resolveModel(stage.model);
+  const model = ctx.modelRegistry?.find(provider, id);
+  if (!model) {
+    haltFailure(pi, ctx, state, `Stage "${stage.skill}" cannot start: model "${stage.model}" is not available.`);
+    return false;
+  }
+
+  void pi.setModel(model).then((ok) => {
+    if (!ok) {
+      haltFailure(
+        pi,
+        ctx,
+        state,
+        `Stage "${stage.skill}" could not switch to "${stage.model}" (no API key?). Flow paused.`,
+      );
+    }
+  });
+  return true;
+}
+
+function haltFailure(pi: ExtensionAPI, ctx: ExtensionContext, state: FlowState, message: string): void {
+  persist(pi, { ...state, phase: "gated" });
+  ctx.ui.notify(message, "error");
+}
+
+function buildKickoff(stage: FlowStage, state: FlowState): string {
+  if (state.stageIndex === 0) {
+    return `Use the ${stage.skill} skill. Topic: ${state.input}`;
+  }
+  return `Continue with the ${stage.skill} skill, building on what this session has produced so far.`;
 }
