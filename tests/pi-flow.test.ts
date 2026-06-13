@@ -1,38 +1,64 @@
 import { describe, test, expect, beforeEach } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import piFlowExtension from "../extensions/pi-flow.js";
-import { resetState } from "../src/state.js";
+import { getState, resetState } from "../src/state.js";
 
-// Mock pi ExtensionAPI for testing
-function createMockPi(): {
-  api: ExtensionAPI;
-  calls: {
-    commands: Array<{ name: string; handler: (args: string, ctx: ExtensionContext) => void }>;
-    models: Array<{ provider: string; id: string }>;
-    messages: string[];
-    entries: Array<{ type: string; data: unknown }>;
-    widgets: Array<{ id: string; content: unknown }>;
-    notifications: Array<{ text: string; type: string }>;
-  };
-  getCommand(name: string): ((args: string, ctx: ExtensionContext) => void) | undefined;
-  getLastEntry(): unknown;
-} {
-  const calls = {
-    commands: [] as Array<{ name: string; handler: (args: string, ctx: ExtensionContext) => void }>,
-    models: [] as Array<{ provider: string; id: string }>,
-    messages: [] as string[],
-    entries: [] as Array<{ type: string; data: unknown }>,
-    widgets: [] as Array<{ id: string; content: unknown }>,
-    notifications: [] as Array<{ text: string; type: string }>,
+const TEST_FLOWS = {
+  "new-feature": {
+    description: "Grill → TDD",
+    stages: [
+      { skill: "grill-with-docs", model: "opencode-go/qwen3.7-max", mode: "HITL" },
+      { skill: "tdd", model: "opencode-go/kimi-k2.6", mode: "AFK" },
+    ],
+  },
+  "all-afk": {
+    description: "two autonomous stages",
+    stages: [
+      { skill: "diagnose", mode: "AFK" },
+      { skill: "tdd", mode: "AFK" },
+    ],
+  },
+  "bad-model": {
+    description: "references a missing model",
+    stages: [{ skill: "tdd", model: "bad/model", mode: "AFK" }],
+  },
+};
+
+interface Calls {
+  commands: Array<{
+    name: string;
+    handler: (args: string, ctx: ExtensionContext) => void;
+    getArgumentCompletions?: (prefix: string) => Array<{ value: string; label: string; description?: string }> | null;
+  }>;
+  events: Record<string, (...args: unknown[]) => void>;
+  models: Array<{ provider: string; id: string }>;
+  messages: string[];
+  entries: Array<{ type: string; data: unknown }>;
+  widgets: Array<{ id: string; content: unknown }>;
+  notifications: Array<{ text: string; type: string }>;
+}
+
+function createMockPi(options: { setModelOk?: boolean } = {}) {
+  const calls: Calls = {
+    commands: [],
+    events: {},
+    models: [],
+    messages: [],
+    entries: [],
+    widgets: [],
+    notifications: [],
   };
 
   const api = {
-    registerCommand: (name: string, options: { handler: (args: string, ctx: ExtensionContext) => void }) => {
-      calls.commands.push({ name, handler: options.handler });
+    registerCommand: (name: string, options: Calls["commands"][number]) => {
+      calls.commands.push({ name, handler: options.handler, getArgumentCompletions: options.getArgumentCompletions });
+    },
+    on: (event: string, handler: (data: unknown) => void) => {
+      calls.events[event] = handler;
     },
     setModel: (model: { provider: string; id: string }) => {
       calls.models.push(model);
-      return Promise.resolve(true);
+      return Promise.resolve(options.setModelOk ?? true);
     },
     sendUserMessage: (content: string) => {
       calls.messages.push(content);
@@ -40,353 +66,465 @@ function createMockPi(): {
     appendEntry: (type: string, data: unknown) => {
       calls.entries.push({ type, data });
     },
-    on: () => {},
-    ui: {
-      setWidget: (id: string, content: unknown) => {
-        calls.widgets.push({ id, content });
-      },
-      notify: (text: string, type: string) => {
-        calls.notifications.push({ text, type });
-      },
-    },
-
   } as unknown as ExtensionAPI;
 
-  const getCommand = (name: string) => {
-    return calls.commands.find((c) => c.name === name)?.handler;
-  };
+  const getCommand = (name: string) => calls.commands.find((c) => c.name === name)?.handler;
+  const getCompletions = (name: string) => calls.commands.find((c) => c.name === name)?.getArgumentCompletions;
+  const getLastEntry = () => calls.entries[calls.entries.length - 1]?.data as Record<string, unknown>;
 
-  const getLastEntry = () => {
-    return calls.entries[calls.entries.length - 1]?.data;
-  };
-
-  return { api, calls, getCommand, getLastEntry };
+  return { api, calls, getCommand, getCompletions, getLastEntry };
 }
 
-// Mock ExtensionContext - shares tracking arrays with the mock pi
-function createMockCtx(calls: {
-  widgets: Array<{ id: string; content: unknown }>;
-  notifications: Array<{ text: string; type: string }>;
-}): ExtensionContext {
+function createMockCtx(calls: Calls, branch: unknown[] = []): ExtensionContext {
   return {
     ui: {
-      setWidget: (id: string, content: unknown) => {
-        calls.widgets.push({ id, content });
-      },
-      notify: (text: string, type: string) => {
-        calls.notifications.push({ text, type });
-      },
+      notify: (text: string, type: string) => calls.notifications.push({ text, type }),
+      setWidget: (id: string, content: unknown) => calls.widgets.push({ id, content }),
     },
     modelRegistry: {
-      find: (provider: string, id: string) => ({ provider, id, name: `${provider}/${id}` }),
-      list: () => [
-        { provider: "opencode-go", id: "qwen3.7-max", name: "opencode-go/qwen3.7-max" },
-        { provider: "opencode-go", id: "kimi-k2.6", name: "opencode-go/kimi-k2.6" },
-      ],
+      find: (provider: string, id: string) =>
+        provider === "bad" ? undefined : { provider, id, name: `${provider}/${id}` },
+    },
+    sessionManager: {
+      getBranch: () => branch,
     },
   } as unknown as ExtensionContext;
 }
 
-describe("pi-flow", () => {
-  beforeEach(() => {
-    resetState();
-  });
+function persistedEntry(state: Record<string, unknown>) {
+  return { type: "custom", customType: "pi-flow-state", data: state };
+}
 
-  test("starting a new-feature pipeline sets pipeline to running at stage 0", () => {
-    const { api, getCommand, getLastEntry, calls } = createMockPi();
+describe("pi-flow run", () => {
+  beforeEach(() => resetState());
+
+  test("running a flow sets state to running at stage 0 with the input", () => {
+    const { api, calls, getCommand, getLastEntry } = createMockPi();
     const ctx = createMockCtx(calls);
 
-    piFlowExtension(api);
-    const handler = getCommand("pi-flow:new-feature");
-    expect(handler).toBeDefined();
-    handler!("build chat feature", ctx);
+    piFlowExtension(api, { loadRawFlows: () => TEST_FLOWS });
+    const run = getCommand("pi-flow:run");
+    expect(run).toBeDefined();
+    run!("new-feature build chat feature", ctx);
 
-    const state = getLastEntry() as {
-      pipelineId: string;
-      stageIndex: number;
-      phase: string;
-      topic: string;
-      artifacts: Record<string, string[]>;
-      startedAt: number;
-    };
-
-    expect(state).toBeDefined();
-    expect(state.pipelineId).toBe("new-feature");
+    const state = getLastEntry();
+    expect(state.flowId).toBe("new-feature");
     expect(state.stageIndex).toBe(0);
     expect(state.phase).toBe("running");
-    expect(state.topic).toBe("build chat feature");
-    expect(state.artifacts).toEqual({});
-    expect(state.startedAt).toBeGreaterThan(0);
+    expect(state.input).toBe("build chat feature");
   });
 
-  test("starting a new-feature pipeline switches to the design model", () => {
-    const { api, getCommand, calls } = createMockPi();
+  test("running switches to the first stage's model", () => {
+    const { api, calls, getCommand } = createMockPi();
     const ctx = createMockCtx(calls);
 
-    piFlowExtension(api);
-    const handler = getCommand("pi-flow:new-feature");
-    handler!("build chat feature", ctx);
+    piFlowExtension(api, { loadRawFlows: () => TEST_FLOWS });
+    getCommand("pi-flow:run")!("new-feature build chat", ctx);
 
     expect(calls.models).toHaveLength(1);
-    expect(calls.models[0].provider).toBe("opencode-go");
-    expect(calls.models[0].id).toBe("qwen3.7-max");
+    expect(calls.models[0]).toMatchObject({ provider: "opencode-go", id: "qwen3.7-max" });
   });
 
-  test("the next command advances to the next stage", () => {
-    const { api, getCommand, getLastEntry, calls } = createMockPi();
+  test("running does not switch model when the first stage omits one", () => {
+    const { api, calls, getCommand } = createMockPi();
     const ctx = createMockCtx(calls);
 
-    piFlowExtension(api);
-    const startHandler = getCommand("pi-flow:new-feature");
-    startHandler!("build chat feature", ctx);
+    piFlowExtension(api, { loadRawFlows: () => TEST_FLOWS });
+    getCommand("pi-flow:run")!("all-afk debug it", ctx);
 
-    const nextHandler = getCommand("pi-flow:next");
-    nextHandler!("", ctx);
+    expect(calls.models).toHaveLength(0);
+  });
 
-    const state = getLastEntry() as {
-      pipelineId: string;
-      stageIndex: number;
-      phase: string;
-    };
+  test("running sends a kickoff naming the skill and the input", () => {
+    const { api, calls, getCommand } = createMockPi();
+    const ctx = createMockCtx(calls);
 
-    expect(state).toBeDefined();
-    expect(state.pipelineId).toBe("new-feature");
+    piFlowExtension(api, { loadRawFlows: () => TEST_FLOWS });
+    getCommand("pi-flow:run")!("new-feature build chat feature", ctx);
+
+    expect(calls.messages).toHaveLength(1);
+    expect(calls.messages[0]).toContain("grill-with-docs");
+    expect(calls.messages[0]).toContain("build chat feature");
+  });
+
+  test("run autocompletes flow names with descriptions, filtered by prefix", () => {
+    const { api, getCompletions } = createMockPi();
+
+    piFlowExtension(api, { loadRawFlows: () => TEST_FLOWS });
+    const complete = getCompletions("pi-flow:run");
+    const all = complete!("");
+    const filtered = complete!("new");
+
+    const allNames = all?.map((i) => i.value);
+    expect(allNames).toEqual(expect.arrayContaining(["all-afk", "bad-model", "new-feature"]));
+    expect(filtered).toEqual([
+      { value: "new-feature", label: "new-feature", description: "Grill → TDD" },
+    ]);
+  });
+
+  test("running an unknown flow notifies an error", () => {
+    const { api, calls, getCommand } = createMockPi();
+    const ctx = createMockCtx(calls);
+
+    piFlowExtension(api, { loadRawFlows: () => TEST_FLOWS });
+    getCommand("pi-flow:run")!("nope whatever", ctx);
+
+    expect(calls.notifications[0].type).toBe("error");
+    expect(calls.notifications[0].text).toContain("not found");
+  });
+
+  test("running while a flow is active refuses with a cancel-first warning", () => {
+    const { api, calls, getCommand } = createMockPi();
+    const ctx = createMockCtx(calls);
+
+    piFlowExtension(api, { loadRawFlows: () => TEST_FLOWS });
+    const run = getCommand("pi-flow:run")!;
+    run("new-feature first", ctx);
+    run("all-afk second", ctx);
+
+    const warning = calls.notifications.find((n) => n.type === "warning");
+    expect(warning?.text).toContain("Cancel it first");
+  });
+
+  test("an invalid flow config notifies an error instead of starting", () => {
+    const { api, calls, getCommand } = createMockPi();
+    const ctx = createMockCtx(calls);
+
+    piFlowExtension(api, { loadRawFlows: () => ({ broken: { stages: [] } }) });
+    getCommand("pi-flow:run")!("broken go", ctx);
+
+    expect(calls.notifications[0].type).toBe("error");
+    expect(calls.notifications[0].text).toContain("Invalid pi-flow config");
+  });
+});
+
+describe("pi-flow advancement", () => {
+  beforeEach(() => resetState());
+
+  function fireAgentEnd(calls: Calls, ctx: ExtensionContext, finalText: string) {
+    calls.events["agent_end"]!({ messages: [{ content: finalText }] }, ctx);
+  }
+
+  function start(flowKey: string) {
+    const mock = createMockPi();
+    const ctx = createMockCtx(mock.calls);
+    piFlowExtension(mock.api, { loadRawFlows: () => TEST_FLOWS });
+    mock.getCommand("pi-flow:run")!(`${flowKey} go`, ctx);
+    return { ...mock, ctx };
+  }
+
+  test("the extension subscribes to agent_end", () => {
+    const { api, calls } = createMockPi();
+    piFlowExtension(api, { loadRawFlows: () => TEST_FLOWS });
+    expect(calls.events["agent_end"]).toBeDefined();
+  });
+
+  test("an AFK stage advances on agent_end with no anti-signal", () => {
+    const { calls, ctx, getLastEntry } = start("all-afk");
+    calls.messages.length = 0;
+
+    fireAgentEnd(calls, ctx, "Diagnosis complete.");
+
+    const state = getLastEntry();
+    expect(state.stageIndex).toBe(1);
+    expect(state.phase).toBe("running");
+    expect(calls.messages[0]).toContain("tdd");
+  });
+
+  test("an AFK stage halts on agent_end when an anti-signal is present", () => {
+    const { calls, ctx, getLastEntry } = start("all-afk");
+
+    fireAgentEnd(calls, ctx, "I am not done — still working on the diagnosis.");
+
+    const state = getLastEntry();
+    expect(state.stageIndex).toBe(0);
+    expect(state.phase).toBe("gated");
+  });
+
+  test("a HITL stage does not auto-advance on agent_end", () => {
+    const { calls, ctx, getLastEntry } = start("new-feature");
+
+    fireAgentEnd(calls, ctx, "All questions resolved, shared understanding reached.");
+
+    const state = getLastEntry();
+    expect(state.stageIndex).toBe(0);
+    expect(state.phase).toBe("running");
+  });
+
+  test("/pi-flow:next advances past a HITL stage and switches the next model", () => {
+    const { calls, ctx, getCommand, getLastEntry } = start("new-feature");
+    calls.models.length = 0;
+
+    getCommand("pi-flow:next")!("", ctx);
+
+    const state = getLastEntry();
+    expect(state.stageIndex).toBe(1);
+    expect(state.phase).toBe("running");
+    expect(calls.models[0]).toMatchObject({ provider: "opencode-go", id: "kimi-k2.6" });
+  });
+
+  test("/pi-flow:next during an AFK stage is a no-op with a hint", () => {
+    const { calls, ctx, getCommand, getLastEntry } = start("all-afk");
+
+    getCommand("pi-flow:next")!("", ctx);
+
+    const state = getLastEntry();
+    expect(state.stageIndex).toBe(0);
+    expect(calls.notifications.some((n) => /AFK/.test(n.text))).toBe(true);
+  });
+
+  test("an all-AFK flow traverses every stage and completes, clearing the widget", () => {
+    const { calls, ctx, getLastEntry } = start("all-afk");
+
+    fireAgentEnd(calls, ctx, "Diagnosis complete.");
+    fireAgentEnd(calls, ctx, "All tests passing.");
+
+    const state = getLastEntry();
+    expect(state.phase).toBe("complete");
+    expect(calls.widgets[calls.widgets.length - 1].content).toBeUndefined();
+  });
+
+  test("/pi-flow:next with no active flow errors", () => {
+    const { api, calls, getCommand } = createMockPi();
+    const ctx = createMockCtx(calls);
+    piFlowExtension(api, { loadRawFlows: () => TEST_FLOWS });
+
+    getCommand("pi-flow:next")!("", ctx);
+
+    expect(calls.notifications[0].type).toBe("error");
+    expect(calls.notifications[0].text).toContain("No active flow");
+  });
+});
+
+describe("pi-flow controls", () => {
+  beforeEach(() => resetState());
+
+  function start(flowKey: string) {
+    const mock = createMockPi();
+    const ctx = createMockCtx(mock.calls);
+    piFlowExtension(mock.api, { loadRawFlows: () => TEST_FLOWS });
+    mock.getCommand("pi-flow:run")!(`${flowKey} go`, ctx);
+    return { ...mock, ctx };
+  }
+
+  test("/pi-flow:skip force-advances a HITL stage to the next stage", () => {
+    const { calls, ctx, getCommand, getLastEntry } = start("new-feature");
+
+    getCommand("pi-flow:skip")!("", ctx);
+
+    const state = getLastEntry();
     expect(state.stageIndex).toBe(1);
     expect(state.phase).toBe("running");
   });
 
-  test("the next command shows error when no pipeline is active", () => {
-    const { api, getCommand, calls } = createMockPi();
+  test("/pi-flow:skip on the last stage completes the flow and clears the widget", () => {
+    const { calls, ctx, getCommand, getLastEntry } = start("all-afk");
+
+    getCommand("pi-flow:skip")!("", ctx); // stage 0 -> 1
+    getCommand("pi-flow:skip")!("", ctx); // stage 1 -> complete
+
+    expect(getLastEntry().phase).toBe("complete");
+    expect(calls.widgets[calls.widgets.length - 1].content).toBeUndefined();
+  });
+
+  test("/pi-flow:retry re-sends the current stage kickoff without advancing", () => {
+    const { calls, ctx, getCommand, getLastEntry } = start("new-feature");
+    calls.messages.length = 0;
+
+    getCommand("pi-flow:retry")!("", ctx);
+
+    expect(getLastEntry().stageIndex).toBe(0);
+    expect(calls.messages).toHaveLength(1);
+    expect(calls.messages[0]).toContain("grill-with-docs");
+  });
+
+  test("/pi-flow:cancel stops the flow and clears the widget", () => {
+    const { calls, ctx, getCommand, getLastEntry } = start("new-feature");
+
+    getCommand("pi-flow:cancel")!("", ctx);
+
+    expect(getLastEntry().phase).toBe("idle");
+    expect(calls.widgets[calls.widgets.length - 1].content).toBeUndefined();
+    expect(calls.notifications.some((n) => /cancel/i.test(n.text))).toBe(true);
+  });
+
+  test("/pi-flow:skip with no active flow errors", () => {
+    const { api, calls, getCommand } = createMockPi();
     const ctx = createMockCtx(calls);
+    piFlowExtension(api, { loadRawFlows: () => TEST_FLOWS });
 
-    piFlowExtension(api);
-    const nextHandler = getCommand("pi-flow:next");
-    nextHandler!("", ctx);
+    getCommand("pi-flow:skip")!("", ctx);
 
-    expect(calls.notifications).toHaveLength(1);
-    expect(calls.notifications[0].text).toContain("No active pipeline");
     expect(calls.notifications[0].type).toBe("error");
+    expect(calls.notifications[0].text).toContain("No active flow");
+  });
+});
+
+describe("pi-flow status & widget", () => {
+  beforeEach(() => resetState());
+
+  test("running renders a widget showing the flow and current stage", () => {
+    const { api, calls, getCommand } = createMockPi();
+    const ctx = createMockCtx(calls);
+    piFlowExtension(api, { loadRawFlows: () => TEST_FLOWS });
+
+    getCommand("pi-flow:run")!("new-feature go", ctx);
+
+    const content = calls.widgets[calls.widgets.length - 1].content as string[];
+    expect(content[0]).toContain("new-feature");
+    expect(content[0]).toContain("1/2");
+    expect(content[0]).toContain("grill-with-docs");
   });
 
-  test("advancing past the last stage completes the pipeline", () => {
-    const { api, getCommand, getLastEntry, calls } = createMockPi();
+  test("/pi-flow:status with no active flow lists the catalog", () => {
+    const { api, calls, getCommand } = createMockPi();
     const ctx = createMockCtx(calls);
+    piFlowExtension(api, { loadRawFlows: () => TEST_FLOWS });
 
-    piFlowExtension(api);
-    const startHandler = getCommand("pi-flow:new-feature");
-    startHandler!("build chat feature", ctx);
+    getCommand("pi-flow:status")!("", ctx);
 
-    const nextHandler = getCommand("pi-flow:next");
-    nextHandler!("", ctx); // stage 1: prd
-    nextHandler!("", ctx); // stage 2: issues
-    nextHandler!("", ctx); // stage 3: tdd
-    nextHandler!("", ctx); // past last stage → complete
-
-    const state = getLastEntry() as {
-      pipelineId: string;
-      stageIndex: number;
-      phase: string;
-    };
-
-    expect(state).toBeDefined();
-    expect(state.pipelineId).toBe("new-feature");
-    expect(state.phase).toBe("complete");
-    expect(calls.notifications.some((n) => n.text.includes("Pipeline complete"))).toBe(true);
+    expect(calls.notifications[0].text).toContain("new-feature");
+    expect(calls.notifications[0].text).toContain("all-afk");
   });
 
-  test("widget shows correct status after starting a pipeline", () => {
-    const { api, getCommand, calls } = createMockPi();
+  test("/pi-flow:status with an active flow shows stage, mode, and controls", () => {
+    const { api, calls, getCommand } = createMockPi();
     const ctx = createMockCtx(calls);
-
-    piFlowExtension(api);
-    const handler = getCommand("pi-flow:new-feature");
-    handler!("build chat feature", ctx);
-
-    expect(calls.widgets).toHaveLength(1);
-    const widgetContent = calls.widgets[0].content as string[];
-    expect(widgetContent[0]).toContain("New Feature");
-    expect(widgetContent[0]).toContain("stage 1/4");
-    expect(widgetContent[0]).toContain("grill");
-  });
-
-  test("advancing to tdd stage switches to the code model", () => {
-    const { api, getCommand, calls } = createMockPi();
-    const ctx = createMockCtx(calls);
-
-    piFlowExtension(api);
-    const startHandler = getCommand("pi-flow:new-feature");
-    startHandler!("build chat feature", ctx);
-
-    const nextHandler = getCommand("pi-flow:next");
-    nextHandler!("", ctx); // stage 1: prd (design model)
-    nextHandler!("", ctx); // stage 2: issues (design model)
-    nextHandler!("", ctx); // stage 3: tdd (code model)
-
-    // Should have 4 model switches: initial (design) + 3 next commands
-    expect(calls.models).toHaveLength(4);
-    // Last switch should be to code model
-    expect(calls.models[3].provider).toBe("opencode-go");
-    expect(calls.models[3].id).toBe("kimi-k2.6");
-  });
-
-  test("cancel command clears pipeline state and widget", () => {
-    const { api, getCommand, getLastEntry, calls } = createMockPi();
-    const ctx = createMockCtx(calls);
-
-    piFlowExtension(api);
-    const startHandler = getCommand("pi-flow:new-feature");
-    startHandler!("build chat feature", ctx);
-
-    const cancelHandler = getCommand("pi-flow:cancel");
-    cancelHandler!("", ctx);
-
-    const state = getLastEntry() as {
-      pipelineId: string;
-      phase: string;
-    };
-
-    expect(state).toBeDefined();
-    expect(state.phase).toBe("idle");
-    const lastWidget = calls.widgets[calls.widgets.length - 1];
-    expect(lastWidget.id).toBe("pi-flow");
-    expect(lastWidget.content).toBeUndefined();
-  });
-
-  test("status command shows current pipeline info", () => {
-    const { api, getCommand, calls } = createMockPi();
-    const ctx = createMockCtx(calls);
-
-    piFlowExtension(api);
-    const startHandler = getCommand("pi-flow:new-feature");
-    startHandler!("build chat feature", ctx);
-
-    // Reset notifications to isolate status output
+    piFlowExtension(api, { loadRawFlows: () => TEST_FLOWS });
+    getCommand("pi-flow:run")!("new-feature go", ctx);
     calls.notifications.length = 0;
 
-    const statusHandler = getCommand("pi-flow:status");
-    statusHandler!("", ctx);
+    getCommand("pi-flow:status")!("", ctx);
 
-    expect(calls.notifications).toHaveLength(1);
-    expect(calls.notifications[0].text).toContain("new-feature");
-    expect(calls.notifications[0].text).toContain("stage 1/4");
-    expect(calls.notifications[0].text).toContain("grill");
-    expect(calls.notifications[0].type).toBe("info");
+    const text = calls.notifications[0].text;
+    expect(text).toContain("1/2");
+    expect(text).toContain("grill-with-docs");
+    expect(text).toContain("HITL");
+    expect(text).toContain("cancel");
   });
 
-  test("starting a pipeline sends a transition prompt for the first stage", () => {
-    const { api, getCommand, calls } = createMockPi();
+  test("session_start with no active flow renders the idle widget", () => {
+    const { api, calls } = createMockPi();
     const ctx = createMockCtx(calls);
+    piFlowExtension(api, { loadRawFlows: () => TEST_FLOWS });
 
-    piFlowExtension(api);
-    const handler = getCommand("pi-flow:new-feature");
-    handler!("build chat feature", ctx);
+    calls.events["session_start"]!({}, ctx);
 
-    // Should send a transition prompt describing the stage
-    expect(calls.messages).toHaveLength(1);
-    expect(calls.messages[0]).toContain("grill");
+    const content = calls.widgets[calls.widgets.length - 1].content as string[];
+    expect(content[0]).toContain("/pi-flow:run");
+  });
+});
+
+describe("pi-flow failure handling", () => {
+  beforeEach(() => resetState());
+
+  test("running a flow with an unknown model halts before stage 0 with an error", () => {
+    const { api, calls, getCommand } = createMockPi();
+    const ctx = createMockCtx(calls);
+    piFlowExtension(api, { loadRawFlows: () => TEST_FLOWS });
+
+    getCommand("pi-flow:run")!("bad-model go", ctx);
+
+    expect(calls.messages).toHaveLength(0);
+    const error = calls.notifications.find((n) => n.type === "error");
+    expect(error?.text).toMatch(/bad\/model/);
   });
 
-  test("skip command force-advances to the next stage", () => {
-    const { api, getCommand, getLastEntry, calls } = createMockPi();
+  test("a stage whose model switch fails mid-flow halts the flow (gated)", async () => {
+    const { api, calls, getCommand, getLastEntry } = createMockPi({ setModelOk: false });
     const ctx = createMockCtx(calls);
+    piFlowExtension(api, { loadRawFlows: () => TEST_FLOWS });
 
-    piFlowExtension(api);
-    const startHandler = getCommand("pi-flow:new-feature");
-    startHandler!("build chat feature", ctx);
+    getCommand("pi-flow:run")!("new-feature go", ctx);
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
-    const skipHandler = getCommand("pi-flow:skip");
-    skipHandler!("", ctx);
+    expect(getLastEntry().phase).toBe("gated");
+    expect(calls.notifications.some((n) => n.type === "error")).toBe(true);
+  });
 
-    const state = getLastEntry() as {
-      pipelineId: string;
-      stageIndex: number;
-      phase: string;
-    };
+  test("a halted flow can still be steered with /pi-flow:skip", () => {
+    const { api, calls, getCommand, getLastEntry } = createMockPi();
+    const ctx = createMockCtx(calls);
+    piFlowExtension(api, { loadRawFlows: () => TEST_FLOWS });
+    getCommand("pi-flow:run")!("all-afk go", ctx);
+    calls.events["agent_end"]!({ messages: [{ content: "I am not done yet." }] }, ctx);
+    expect(getLastEntry().phase).toBe("gated");
 
-    expect(state).toBeDefined();
-    expect(state.pipelineId).toBe("new-feature");
-    expect(state.stageIndex).toBe(1);
+    getCommand("pi-flow:skip")!("", ctx);
+
+    expect(getLastEntry().stageIndex).toBe(1);
+    expect(getLastEntry().phase).toBe("running");
+  });
+});
+
+describe("pi-flow built-ins", () => {
+  beforeEach(() => resetState());
+
+  test("a built-in flow runs without any user config", () => {
+    const { api, calls, getCommand, getLastEntry } = createMockPi();
+    const ctx = createMockCtx(calls);
+    piFlowExtension(api, { loadRawFlows: () => undefined });
+
+    getCommand("pi-flow:run")!("debug a crash", ctx);
+
+    const state = getLastEntry();
+    expect(state.flowId).toBe("debug");
     expect(state.phase).toBe("running");
   });
 
-  test("auto stage advances automatically when completion is detected", () => {
-    const { api, getCommand, getLastEntry, calls } = createMockPi();
+  test("/pi-flow:show prints a flow definition as JSON", () => {
+    const { api, calls, getCommand } = createMockPi();
     const ctx = createMockCtx(calls);
+    piFlowExtension(api, { loadRawFlows: () => undefined });
 
-    piFlowExtension(api);
-    const startHandler = getCommand("pi-flow:new-feature");
-    startHandler!("build chat feature", ctx);
+    getCommand("pi-flow:show")!("debug", ctx);
 
-    // Simulate agent_end with a completion signal for the prd stage (auto gate)
-    // First we need to advance to prd stage (stage 1, auto gate)
-    const nextHandler = getCommand("pi-flow:next");
-    nextHandler!("", ctx); // now at stage 1 (prd, auto gate)
-
-    // Reset messages to track auto-advance
-    const msgCountBefore = calls.messages.length;
-
-    // Simulate agent_end event with completion signal
-    // The extension should detect completion and auto-advance to issues (stage 2)
-    // We need to trigger this through the event system
-    // For now, this test documents the expected behavior
-    // Full integration will be tested manually
-
-    const state = getLastEntry() as {
-      stageIndex: number;
-      phase: string;
-    };
-
-    // After manual next, we're at stage 1 (prd)
-    expect(state.stageIndex).toBe(1);
-    expect(state.phase).toBe("running");
+    const text = calls.notifications[0].text;
+    expect(text).toContain("debug");
+    expect(text).toContain("diagnose");
+    expect(text).toContain("stages");
   });
 
-  test("retry command re-sends the current stage transition prompt", () => {
-    const { api, getCommand, calls } = createMockPi();
+  test("/pi-flow:show with an unknown name errors", () => {
+    const { api, calls, getCommand } = createMockPi();
     const ctx = createMockCtx(calls);
+    piFlowExtension(api, { loadRawFlows: () => undefined });
 
-    piFlowExtension(api);
-    const startHandler = getCommand("pi-flow:new-feature");
-    startHandler!("build chat feature", ctx);
+    getCommand("pi-flow:show")!("nope", ctx);
 
-    const initialMessageCount = calls.messages.length;
+    expect(calls.notifications[0].type).toBe("error");
+    expect(calls.notifications[0].text).toContain("not found");
+  });
+});
 
-    const retryHandler = getCommand("pi-flow:retry");
-    retryHandler!("", ctx);
+describe("pi-flow restore", () => {
+  beforeEach(() => resetState());
 
-    expect(calls.messages.length).toBe(initialMessageCount + 1);
-    expect(calls.messages[calls.messages.length - 1]).toContain("grill");
+  test("restores a halted flow on session_start and re-notifies how to continue", () => {
+    const { api, calls } = createMockPi();
+    const branch = [
+      persistedEntry({ flowId: "new-feature", stageIndex: 1, phase: "gated", input: "x", startedAt: 1 }),
+    ];
+    const ctx = createMockCtx(calls, branch);
+    piFlowExtension(api, { loadRawFlows: () => TEST_FLOWS });
+
+    calls.events["session_start"]!({}, ctx);
+
+    expect(getState()).toMatchObject({ flowId: "new-feature", stageIndex: 1, phase: "gated" });
+    expect(calls.notifications.some((n) => /restored|continue/i.test(n.text))).toBe(true);
   });
 
-  test("status command shows no pipeline when none active", () => {
-    const { api, getCommand, calls } = createMockPi();
-    const ctx = createMockCtx(calls);
+  test("clears a restored state whose flow is no longer defined", () => {
+    const { api, calls } = createMockPi();
+    const branch = [
+      persistedEntry({ flowId: "ghost", stageIndex: 0, phase: "running", input: "x", startedAt: 1 }),
+    ];
+    const ctx = createMockCtx(calls, branch);
+    piFlowExtension(api, { loadRawFlows: () => TEST_FLOWS });
 
-    piFlowExtension(api);
-    const statusHandler = getCommand("pi-flow:status");
-    statusHandler!("", ctx);
+    calls.events["session_start"]!({}, ctx);
 
-    expect(calls.notifications).toHaveLength(1);
-    expect(calls.notifications[0].text).toContain("No active pipeline");
-    expect(calls.notifications[0].type).toBe("info");
-  });
-
-  test("widget clears when pipeline completes", () => {
-    const { api, getCommand, calls } = createMockPi();
-    const ctx = createMockCtx(calls);
-
-    piFlowExtension(api);
-    const startHandler = getCommand("pi-flow:new-feature");
-    startHandler!("build chat feature", ctx);
-
-    const nextHandler = getCommand("pi-flow:next");
-    nextHandler!("", ctx); // stage 1: prd
-    nextHandler!("", ctx); // stage 2: issues
-    nextHandler!("", ctx); // stage 3: tdd
-    nextHandler!("", ctx); // past last stage → complete
-
-    const lastWidget = calls.widgets[calls.widgets.length - 1];
-    expect(lastWidget.id).toBe("pi-flow");
-    expect(lastWidget.content).toBeUndefined();
+    expect(getState()).toBeNull();
+    expect(calls.notifications.some((n) => /no longer defined/i.test(n.text))).toBe(true);
   });
 });

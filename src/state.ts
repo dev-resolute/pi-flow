@@ -1,19 +1,20 @@
-export interface PipelineState {
-  pipelineId: string;
+export type FlowPhase = "running" | "gated" | "complete" | "idle";
+
+export interface FlowState {
+  flowId: string;
   stageIndex: number;
-  phase: "running" | "gated" | "complete" | "idle";
-  topic: string;
-  artifacts: Record<string, string[]>;
+  phase: FlowPhase;
+  input: string;
   startedAt: number;
 }
 
-let currentState: PipelineState | null = null;
+let currentState: FlowState | null = null;
 
-export function getState(): PipelineState | null {
+export function getState(): FlowState | null {
   return currentState;
 }
 
-export function setState(state: PipelineState): void {
+export function setState(state: FlowState | null): void {
   currentState = state;
 }
 

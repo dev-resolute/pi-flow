@@ -1,23 +1,20 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { readFileSync } from "fs";
+import { join } from "path";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
-export interface PiFlowConfig {
-  models: {
-    design: string;
-    code: string;
-  };
-}
-
-export function getConfig(_pi: ExtensionAPI): PiFlowConfig {
-  return {
-    models: {
-      design: "opencode-go/qwen3.7-max",
-      code: "opencode-go/kimi-k2.6",
-    },
-  };
-}
-
-export function resolveModel(config: PiFlowConfig, modelType: "design" | "code"): { provider: string; id: string } {
-  const modelString = config.models[modelType];
+export function resolveModel(modelString: string): { provider: string; id: string } {
   const [provider, id] = modelString.split("/");
   return { provider, id };
+}
+
+export function readUserFlows(): unknown {
+  try {
+    const settingsPath = join(getAgentDir(), "settings.json");
+    const settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as {
+      "pi-flow"?: { flows?: unknown };
+    };
+    return settings["pi-flow"]?.flows;
+  } catch {
+    return undefined;
+  }
 }
