@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { registerCommands, type PiFlowDeps } from "../src/commands.js";
-import { readUserFlows } from "../src/config.js";
+import { readUserFlows, seedBuiltins } from "../src/config.js";
 import { resolveFlows, type FlowDefinition } from "../src/flows.js";
 import { getState, setState, type FlowState } from "../src/state.js";
 import { handleAgentEnd, STATE_ENTRY } from "../src/executor.js";
@@ -9,6 +9,7 @@ import { renderIdleWidget, renderWidget } from "../src/widget.js";
 export default function piFlowExtension(pi: ExtensionAPI, deps?: Partial<PiFlowDeps>): void {
   const resolved: PiFlowDeps = {
     loadRawFlows: deps?.loadRawFlows ?? readUserFlows,
+    seedBuiltins: deps?.seedBuiltins ?? seedBuiltins,
   };
 
   registerCommands(pi, resolved);

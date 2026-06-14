@@ -44,7 +44,7 @@ export const BUILTIN_FLOWS: Record<string, FlowDefinition> = {
 };
 
 export function resolveFlows(rawFlows: unknown): Record<string, FlowDefinition> {
-  const userFlows: Record<string, FlowDefinition> = {};
+  const result: Record<string, FlowDefinition> = {};
   const flows = (rawFlows ?? {}) as Record<string, RawFlow>;
 
   for (const [name, def] of Object.entries(flows)) {
@@ -53,13 +53,13 @@ export function resolveFlows(rawFlows: unknown): Record<string, FlowDefinition> 
       throw new Error(`Flow "${name}" has no stages`);
     }
 
-    userFlows[name] = {
+    result[name] = {
       description: typeof def.description === "string" ? def.description : undefined,
       stages: rawStages.map((stage, index) => resolveStage(name, index, stage)),
     };
   }
 
-  return { ...BUILTIN_FLOWS, ...userFlows };
+  return result;
 }
 
 function resolveStage(flowName: string, index: number, stage: RawStage): FlowStage {
