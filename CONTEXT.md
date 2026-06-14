@@ -4,7 +4,7 @@
 
 | Term | Definition |
 |------|-----------|
-| **Flow** | An ordered sequence of skills run as one workflow, triggered by name. Three flows (`new-feature`, `improve-arch`, `debug`) ship built-in; users define more in `settings.json`, and a user-defined flow overrides a built-in of the same name. Replaces the earlier term *Pipeline*. |
+| **Flow** | A user-defined, ordered sequence of skills run as one workflow, triggered by name. Flows are the user's own data; `pi-flow` ships three starter flows (`new-feature`, `improve-arch`, `debug`) the user installs once and then owns. Replaces the earlier term *Pipeline*. |
 | **Stage** | A single skill within a flow, configured with its own model and a mode. "Which stage am I in" = which skill is currently running. |
 | **Mode** | A per-stage setting: `HITL` (the flow halts after the skill and waits for a human command before advancing) or `AFK` (the flow auto-advances when the skill's turn ends). A flow whose stages are all `AFK` runs unattended end to end. Replaces the earlier `Gate` (`auto`/`pause`) concept. |
 | **Model** | The LLM a given stage runs on. Each stage names its own model, replacing the earlier `design`/`code` binary classification. |

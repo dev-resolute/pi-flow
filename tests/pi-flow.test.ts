@@ -457,43 +457,63 @@ describe("pi-flow failure handling", () => {
   });
 });
 
-describe("pi-flow built-ins", () => {
+describe("pi-flow setup & help", () => {
   beforeEach(() => resetState());
 
-  test("a built-in flow runs without any user config", () => {
-    const { api, calls, getCommand, getLastEntry } = createMockPi();
+  test("/pi-flow:setup writes the built-ins and reports the path", () => {
+    const { api, calls, getCommand } = createMockPi();
     const ctx = createMockCtx(calls);
-    piFlowExtension(api, { loadRawFlows: () => undefined });
+    let seedCalls = 0;
+    piFlowExtension(api, {
+      loadRawFlows: () => undefined,
+      seedBuiltins: () => {
+        seedCalls += 1;
+        return { written: true, path: "/x/pi-flow.json" };
+      },
+    });
 
-    getCommand("pi-flow:run")!("debug a crash", ctx);
+    getCommand("pi-flow:setup")!("", ctx);
 
-    const state = getLastEntry();
-    expect(state.flowId).toBe("debug");
-    expect(state.phase).toBe("running");
+    expect(seedCalls).toBe(1);
+    expect(calls.notifications[0].type).toBe("info");
+    expect(calls.notifications[0].text).toContain("/x/pi-flow.json");
   });
 
-  test("/pi-flow:show prints a flow definition as JSON", () => {
+  test("/pi-flow:setup leaves an existing flows file untouched", () => {
+    const { api, calls, getCommand } = createMockPi();
+    const ctx = createMockCtx(calls);
+    piFlowExtension(api, {
+      loadRawFlows: () => undefined,
+      seedBuiltins: () => ({ written: false, path: "/x/pi-flow.json" }),
+    });
+
+    getCommand("pi-flow:setup")!("", ctx);
+
+    expect(calls.notifications[0].type).toBe("warning");
+    expect(calls.notifications[0].text).toContain("already has flows");
+  });
+
+  test("/pi-flow:help shows the flow schema", () => {
     const { api, calls, getCommand } = createMockPi();
     const ctx = createMockCtx(calls);
     piFlowExtension(api, { loadRawFlows: () => undefined });
 
-    getCommand("pi-flow:show")!("debug", ctx);
+    getCommand("pi-flow:help")!("", ctx);
 
     const text = calls.notifications[0].text;
-    expect(text).toContain("debug");
-    expect(text).toContain("diagnose");
+    expect(text).toContain("pi-flow.json");
     expect(text).toContain("stages");
+    expect(text).toContain("HITL");
   });
 
-  test("/pi-flow:show with an unknown name errors", () => {
+  test("/pi-flow:status with no flows points the user to setup", () => {
     const { api, calls, getCommand } = createMockPi();
     const ctx = createMockCtx(calls);
     piFlowExtension(api, { loadRawFlows: () => undefined });
 
-    getCommand("pi-flow:show")!("nope", ctx);
+    getCommand("pi-flow:status")!("", ctx);
 
-    expect(calls.notifications[0].type).toBe("error");
-    expect(calls.notifications[0].text).toContain("not found");
+    expect(calls.notifications[0].text).toContain("/pi-flow:setup");
   });
 });
 

@@ -1,5 +1,5 @@
 import { describe, test, expect } from "vitest";
-import { resolveFlows } from "../src/flows.js";
+import { resolveFlows, BUILTIN_FLOWS } from "../src/flows.js";
 
 describe("resolveFlows", () => {
   test("defaults a stage's missing mode to HITL", () => {
@@ -48,26 +48,17 @@ describe("resolveFlows", () => {
     ).toThrow(/mode/);
   });
 
-  test("ships the three built-in flows with no user config", () => {
-    const flows = resolveFlows(undefined);
-
-    expect(Object.keys(flows).sort()).toEqual(["debug", "improve-arch", "new-feature"]);
+  test("returns an empty catalog when there is no config", () => {
+    expect(resolveFlows(undefined)).toEqual({});
   });
 
-  test("a user flow overrides a built-in of the same name", () => {
-    const flows = resolveFlows({
-      "new-feature": { stages: [{ skill: "custom", mode: "AFK" }] },
-    });
-
-    expect(flows["new-feature"].stages).toHaveLength(1);
-    expect(flows["new-feature"].stages[0].skill).toBe("custom");
-  });
-
-  test("a user flow with a new name is added alongside the built-ins", () => {
+  test("returns only the flows in the config (built-ins are not merged in)", () => {
     const flows = resolveFlows({ mine: { stages: [{ skill: "tdd" }] } });
 
-    expect(flows.mine).toBeDefined();
-    expect(flows["new-feature"]).toBeDefined();
-    expect(flows.debug).toBeDefined();
+    expect(Object.keys(flows)).toEqual(["mine"]);
+  });
+
+  test("BUILTIN_FLOWS holds the three classics as seed content", () => {
+    expect(Object.keys(BUILTIN_FLOWS).sort()).toEqual(["debug", "improve-arch", "new-feature"]);
   });
 });

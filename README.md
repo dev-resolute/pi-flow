@@ -8,40 +8,40 @@ Run your own multi-stage skill workflows in [pi](https://pi.dev) — pick the mo
 - **Stage** — one skill in a flow, with its own optional model and a mode.
 - **Mode** — `HITL` (the flow pauses after the skill and waits for `/pi-flow:next`) or `AFK` (the flow auto-advances when the skill's agent run ends). A flow whose stages are all `AFK` runs start to finish unattended.
 
-## Built-in flows
+## Quick start
 
-Three flows ship ready to use — no setup required:
+```bash
+pi install npm:@resolutedev/pi-flow
+```
 
-| Flow | Stages |
-|------|--------|
-| `new-feature` | grill-with-docs → to-prd → to-issues → tdd |
-| `improve-arch` | improve-codebase-architecture → to-prd → to-issues → tdd |
-| `debug` | diagnose → to-prd → to-issues → tdd |
+Then, in pi, write the three starter flows into your config:
 
-Run one:
+```
+/pi-flow:setup
+```
+
+That creates `~/.pi/agent/pi-flow.json` with `new-feature`, `improve-arch`, and `debug`. Now run one:
 
 ```
 /pi-flow:run new-feature add dark mode
 ```
 
-Start typing `/pi-flow:run ` and pi autocompletes your flow names with their descriptions.
+Start typing `/pi-flow:run ` and pi autocompletes your flow names. Until you run `/pi-flow:setup` (or write the file yourself), there are no flows — `/pi-flow:status` will tell you so.
 
-## Defining your own flows
+## Where flows live
 
-Add a top-level `pi-flow` key to your pi `settings.json`. A flow you define with the same name as a built-in overrides it; new names are added alongside the built-ins.
+All flows — the starter ones and your own — live in a single file you own: **`~/.pi/agent/pi-flow.json`** (alongside pi's own `models.json` / `settings.json`). `/pi-flow:setup` seeds it once with the three built-ins; after that it's yours and pi-flow never rewrites it.
 
 ```json
 {
-  "pi-flow": {
-    "flows": {
-      "ship-it": {
-        "description": "Plan, build, and review",
-        "stages": [
-          { "skill": "grill-with-docs", "model": "opencode-go/qwen3.7-max", "mode": "HITL" },
-          { "skill": "to-prd",          "model": "opencode-go/qwen3.7-max", "mode": "AFK"  },
-          { "skill": "tdd",             "model": "opencode-go/kimi-k2.6",   "mode": "AFK"  }
-        ]
-      }
+  "flows": {
+    "ship-it": {
+      "description": "Plan, build, and review",
+      "stages": [
+        { "skill": "grill-with-docs", "model": "opencode-go/qwen3.7-max", "mode": "HITL" },
+        { "skill": "to-prd",          "model": "opencode-go/qwen3.7-max", "mode": "AFK"  },
+        { "skill": "tdd",             "model": "opencode-go/kimi-k2.6",   "mode": "AFK"  }
+      ]
     }
   }
 }
@@ -53,7 +53,7 @@ Each stage:
 - **`model`** (optional) — `"provider/id"`. Omit it to keep whatever model is currently active. All models are validated when you start a flow, so a typo fails before the first stage runs.
 - **`mode`** (optional) — `HITL` or `AFK`. Defaults to `HITL`, so a stage never runs unattended unless you opt in.
 
-To customise a built-in, print its definition with `/pi-flow:show <name>` and paste it under your `pi-flow.flows`.
+Run `/pi-flow:help` any time to print this schema.
 
 ## How a flow runs
 
@@ -70,21 +70,16 @@ Want a checkpoint in an otherwise-unattended flow? Mark that stage `HITL` — th
 
 | Command | Description |
 |---------|-------------|
+| `/pi-flow:setup` | Write the three starter flows into `~/.pi/agent/pi-flow.json` |
+| `/pi-flow:help` | Print the flow schema |
 | `/pi-flow:run <name> [input]` | Start a flow (autocompletes flow names) |
 | `/pi-flow:next` | Advance past a HITL pause |
 | `/pi-flow:skip` | Abandon the current stage and move to the next |
 | `/pi-flow:retry` | Re-run the current stage |
 | `/pi-flow:cancel` | Stop the active flow (produced work stays in the session) |
 | `/pi-flow:status` | Show your flows and the active stage |
-| `/pi-flow:show <name>` | Print a flow's definition as JSON |
 
-## Setup
-
-```bash
-pi install npm:@resolutedev/pi-flow
-```
-
-The built-in flows work immediately. Define your own in `settings.json` as shown above. Flow progress is persisted, so a flow survives `/new` and session restarts; if you delete a flow that was mid-run, its leftover state is cleared on the next start.
+Flow progress is persisted, so a flow survives `/new` and session restarts; if you delete a flow that was mid-run, its leftover state is cleared on the next start.
 
 ### For Maintainers: Publishing Releases
 

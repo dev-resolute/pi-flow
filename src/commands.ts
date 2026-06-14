@@ -3,10 +3,28 @@ import { resolveFlows, type FlowDefinition, type StageMode } from "./flows.js";
 import { getState, setState, type FlowState, type FlowPhase } from "./state.js";
 import { STATE_ENTRY, transitionToStage, advanceStage, validateModels } from "./executor.js";
 import { clearWidget } from "./widget.js";
+import type { SeedResult } from "./config.js";
 
 export interface PiFlowDeps {
   loadRawFlows: () => unknown;
+  seedBuiltins: () => SeedResult;
 }
+
+const FLOW_SCHEMA_HELP = [
+  "pi-flow — flows live in ~/.pi/agent/pi-flow.json:",
+  "",
+  '{ "flows": {',
+  '    "<name>": {',
+  '      "description": "<optional>",',
+  '      "stages": [',
+  '        { "skill": "<skill>", "model": "<provider/id, optional>", "mode": "HITL | AFK" }',
+  "      ]",
+  "    }",
+  "} }",
+  "",
+  "mode: HITL pauses for you after the skill; AFK auto-advances. model is optional (keeps the current model).",
+  "Run /pi-flow:setup to write the three built-in flows into the file.",
+].join("\n");
 
 export function registerCommands(pi: ExtensionAPI, deps: PiFlowDeps): void {
   function loadFlows(ctx: ExtensionContext): Record<string, FlowDefinition> | null {
@@ -40,19 +58,28 @@ export function registerCommands(pi: ExtensionAPI, deps: PiFlowDeps): void {
     },
   });
 
-  pi.registerCommand("pi-flow:show", {
-    description: "Print a flow's definition as JSON",
-    getArgumentCompletions: completeFlowName,
+  pi.registerCommand("pi-flow:setup", {
+    description: "Write the built-in flows to ~/.pi/agent/pi-flow.json",
     handler: (args: string, ctx: ExtensionContext) => {
-      const flows = loadFlows(ctx);
-      if (!flows) return;
-      const name = args.trim();
-      const flow = flows[name];
-      if (!flow) {
-        ctx.ui.notify(`Flow "${name}" not found.`, "error");
-        return;
+      const result = deps.seedBuiltins();
+      if (result.written) {
+        ctx.ui.notify(
+          `Wrote the built-in flows to ${result.path}. Run /pi-flow:status to see them.`,
+          "info",
+        );
+      } else {
+        ctx.ui.notify(
+          `${result.path} already has flows — left untouched. Edit it directly, or see /pi-flow:help.`,
+          "warning",
+        );
       }
-      ctx.ui.notify(JSON.stringify({ [name]: flow }, null, 2), "info");
+    },
+  });
+
+  pi.registerCommand("pi-flow:help", {
+    description: "Show the pi-flow flow schema",
+    handler: (args: string, ctx: ExtensionContext) => {
+      ctx.ui.notify(FLOW_SCHEMA_HELP, "info");
     },
   });
 
@@ -159,7 +186,9 @@ function statusLine(flows: Record<string, FlowDefinition>): string {
   const state = activeState();
   if (!state) {
     const names = Object.keys(flows);
-    return names.length > 0 ? `pi-flow flows: ${names.join(", ")}` : "No flows defined.";
+    return names.length > 0
+      ? `pi-flow flows: ${names.join(", ")}`
+      : "No flows yet. Run /pi-flow:setup to add the built-ins, or create ~/.pi/agent/pi-flow.json (see /pi-flow:help).";
   }
 
   const flow = flows[state.flowId];
